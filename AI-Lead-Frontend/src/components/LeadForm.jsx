@@ -12,7 +12,7 @@ import {
 // Define your API base URL using an environment variable
 // During local development, it will default to http://localhost:8000
 // On Netlify, you will set REACT_APP_API_URL to your Render backend URL
-const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
+const API_BASE_URL = process.env.REACT_APP_API_URL;
 
 const LeadForm = ({ onSubmit }) => {
   const [formData, setFormData] = useState({
