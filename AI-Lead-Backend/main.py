@@ -7,6 +7,7 @@ import joblib
 import traceback
 import logging
 from typing import Optional
+import os # <--- Make sure os is imported for path manipulation
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,23 +15,52 @@ logger = logging.getLogger(__name__)
 
 # --- Load artifacts with error handling ---
 try:
+    # Define the base path for your models directory
+    # os.path.dirname(os.path.abspath(__file__)) gets the directory of the current script (main.py)
+    # Then we join 'models' to it.
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    models_dir = os.path.join(script_dir, 'models')
+
+    # Construct the full paths to the .pkl files
+    classifier_path = os.path.join(models_dir, 'intent_classifier.pkl')
+    preprocessor_path = os.path.join(models_dir, 'preprocessor.pkl')
+
+    logger.info(f"DEBUG: Current working directory during model load: {os.getcwd()}")
+    logger.info(f"DEBUG: Script directory: {script_dir}")
+    logger.info(f"DEBUG: Attempting to load classifier from: {classifier_path}")
+    logger.info(f"DEBUG: Attempting to load preprocessor from: {preprocessor_path}")
+
+    # Check if the models directory and files actually exist before attempting to load
+    if not os.path.isdir(models_dir):
+        raise FileNotFoundError(f"Models directory not found at: {models_dir}")
+    if not os.path.exists(classifier_path):
+        raise FileNotFoundError(f"Classifier file not found at: {classifier_path}")
+    if not os.path.exists(preprocessor_path):
+        raise FileNotFoundError(f"Preprocessor file not found at: {preprocessor_path}")
+
+
     # Load the classifier directly
-    model = joblib.load("intent_classifier.pkl")
+    model = joblib.load(classifier_path)
     # Load the ColumnTransformer (which includes OneHotEncoder and StandardScaler)
-    preprocessor = joblib.load("preprocessor.pkl")
+    preprocessor = joblib.load(preprocessor_path)
     logger.info("✅ Models and Preprocessor loaded successfully [Step 1]")
 
+except FileNotFoundError as fnfe: # Catch specific FileNotFoundError for clarity
+    logger.error(f"❌ File not found during model loading: {fnfe}")
+    logger.error(f"Full traceback: {traceback.format_exc()}")
+    raise # Re-raise to stop deployment if models aren't loaded
+
 except Exception as e:
-    logger.error(f"❌ Error loading models/preprocessor: {str(e)}")
+    logger.error(f"❌ General error loading models/preprocessor: {str(e)}")
+    logger.error(f"Full traceback: {traceback.format_exc()}")
     raise
 
 logger.info("ℹ️ FastAPI app instance creation starting [Step 2]")
 
 # --- FastAPI setup ---
-# REMOVED DUPLICATE: app = FastAPI(title="Lead Scoring API", version="1.0.0")
-app = FastAPI(title="Lead Scoring API", version="1.0.0") # Keep only one instance here
+app = FastAPI(title="Lead Scoring API", version="1.0.0")
 
-logger.info("✅ FastAPI app instance created [Step 3]") # This log now applies to the actual app instance
+logger.info("✅ FastAPI app instance created [Step 3]")
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,7 +101,7 @@ class Lead(BaseModel):
         if not v:
             raise ValueError("Consent is required")
         return v
-    
+
 # Keep this clean_category function consistent with how data was prepared in ML_model.ipynb
 def clean_category(value: str):
     if isinstance(value, str):
@@ -83,7 +113,7 @@ def clean_category(value: str):
 def preprocess_lead(lead: Lead):
     try:
         logger.info(f"🔄 Processing lead: {lead.email}")
-        
+
         # Create a DataFrame from the lead data
         # Column names here MUST match the ones used to fit the ColumnTransformer
         df = pd.DataFrame([{
@@ -94,16 +124,16 @@ def preprocess_lead(lead: Lead):
             "AnnualIncome": lead.annualIncome,
             "NetWorth": lead.netWorth
         }])
-        
+
         # Use the loaded preprocessor (ColumnTransformer) to transform the data
         processed_data = preprocessor.transform(df)
-        
+
         logger.info(f"✅ Preprocessing completed for {lead.email}")
         return processed_data
-    
+
     except Exception as e:
         logger.error(f"❌ Preprocessing error for {lead.email}: {str(e)}")
-        logger.error(traceback.format_exc()) 
+        logger.error(traceback.format_exc())
         raise
 
 # Refined map_intent_to_score to use string labels for clarity
@@ -142,16 +172,16 @@ def read_root():
 async def score_lead(lead: Lead):
     try:
         logger.info(f"📥 Received lead data for: {lead.email}")
-        
+
         # Preprocess the lead
         X_processed = preprocess_lead(lead)
-        
+
         # Predict using the loaded model
         # model.predict() returns the string label directly (e.g., 'High', 'Medium', 'Low')
         predicted_intent_label = model.predict(X_processed)[0] # Correctly gets the string label
-        
+
         logger.info(f"🔮 Predicted class label: {predicted_intent_label}")
-        
+
         initial_score = map_intent_to_score_str(predicted_intent_label)
         reranked_score = rerank_score_from_comment(initial_score, lead.comments)
 
@@ -173,7 +203,7 @@ async def score_lead(lead: Lead):
     except ValueError as ve:
         logger.error(f"❌ Validation error: {str(ve)}")
         raise HTTPException(status_code=422, detail=f"Validation error: {str(ve)}")
-    
+
     except Exception as e:
         logger.error(f"❌ Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
@@ -188,7 +218,7 @@ def get_leads():
 def health_check():
     return {
         "status": "healthy",
-        "models_loaded": True,
+        "models_loaded": True, # This will only be true if the load block succeeds
         "leads_count": len(leads_db)
     }
 
@@ -202,4 +232,6 @@ async def global_exception_handler(request: Request, exc: Exception):
 if __name__ == "__main__":
     logger.info("🚀 Starting Uvicorn server [Step 5]")
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    # Use the PORT environment variable provided by Render, default to 8000 for local testing
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
